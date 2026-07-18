@@ -35,12 +35,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	pref := tele.Settings{
+	b, err := tele.NewBot(tele.Settings{
 		Token:  token,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
-	}
-
-	b, err := tele.NewBot(pref)
+	})
 	if err != nil {
 		log.Error("create bot", "error", err)
 		os.Exit(1)
@@ -56,10 +54,8 @@ func main() {
 
 func makeStartHandler() tele.HandlerFunc {
 	return func(c tele.Context) error {
-		user := c.Sender()
-		// Touch API to auto-register user
-		doGET(fmt.Sprintf("%s/api/v1/documents?telegram_id=%d&username=%s",
-			docsHelperURL, user.ID, user.Username))
+		u := c.Sender()
+		doGET(fmt.Sprintf("%s/api/v1/documents?telegram_id=%d&username=%s", docsHelperURL, u.ID, u.Username))
 		return c.Send("Привет! Я бот для поиска по документам.\n\nЗагрузи PDF или DOCX, затем задай вопрос.")
 	}
 }
@@ -70,7 +66,6 @@ func makeDocHandler(log *slog.Logger) tele.HandlerFunc {
 		if doc.FileSize > 32<<20 {
 			return c.Send("❌ Файл слишком большой. Максимум 32 MB.")
 		}
-
 		ext := strings.ToLower(doc.FileName)
 		if !strings.HasSuffix(ext, ".pdf") && !strings.HasSuffix(ext, ".docx") {
 			return c.Send("❌ Только PDF и DOCX.")
@@ -83,7 +78,6 @@ func makeDocHandler(log *slog.Logger) tele.HandlerFunc {
 			c.Bot().Edit(msg, "❌ Ошибка загрузки.")
 			return err
 		}
-
 		fileData, err := io.ReadAll(file)
 		if err != nil {
 			c.Bot().Edit(msg, "❌ Ошибка чтения.")
@@ -96,14 +90,18 @@ func makeDocHandler(log *slog.Logger) tele.HandlerFunc {
 			return err
 		}
 
+		deadline := time.Now().Add(5 * time.Minute)
 		statuses := map[string]string{
 			"extracting": "📖 Извлекаю текст...",
 			"chunking":   "🧩 Разбиваю на фрагменты...",
 			"embedding":  "🧠 Индексирую...",
 			"ready":      "✅ Готово! Задайте вопрос.",
 		}
-
 		for {
+			if time.Now().After(deadline) {
+				c.Bot().Edit(msg, "❌ Превышено время обработки.")
+				return nil
+			}
 			time.Sleep(1 * time.Second)
 			ds, err := getDocStatus(docID)
 			if err != nil {
@@ -128,17 +126,15 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		if query == "" {
 			return nil
 		}
-
 		msg, _ := c.Bot().Send(c.Recipient(), "🔎 Ищу информацию...")
 
 		results, err := searchDocs(c.Sender().ID, query, 10)
 		if err != nil || len(results) == 0 {
-			c.Bot().Edit(msg, "В загруженных документах не найдено информации для надёжного ответа.")
+			c.Bot().Edit(msg, "В загруженных документах не найдено информации.")
 			return nil
 		}
 
 		c.Bot().Edit(msg, "🤔 Анализирую...")
-
 		answer, sources := askDeepSeek(query, results)
 
 		var sb strings.Builder
@@ -147,7 +143,6 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		for _, s := range sources {
 			sb.WriteString(fmt.Sprintf("\n• %s, стр. %d", s.Doc, s.Page))
 		}
-
 		c.Bot().Edit(msg, sb.String(), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
 		return nil
 	}
@@ -166,14 +161,22 @@ func uploadFile(telegramID int64, username, filename string, data []byte) (int64
 	req, _ := http.NewRequest("POST", url, &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("upload: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("upload http %d: %s", resp.StatusCode, string(body))
+	}
+
 	var doc struct{ ID int64 `json:"id"` }
-	json.NewDecoder(resp.Body).Decode(&doc)
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return 0, fmt.Errorf("upload decode: %w", err)
+	}
 	return doc.ID, nil
 }
 
@@ -188,7 +191,6 @@ type searchResult struct {
 	Score   float32 `json:"score"`
 	DocName string  `json:"doc_name"`
 }
-
 type chunk struct {
 	Text    string `json:"text"`
 	PageNum int    `json:"page_num"`
@@ -199,26 +201,24 @@ func searchDocs(telegramID int64, query string, limit int) ([]searchResult, erro
 	var resp struct {
 		Results []searchResult `json:"results"`
 	}
-	body := map[string]any{
+	err := doJSON("POST", docsHelperURL+"/api/v1/search", map[string]any{
 		"telegram_id": telegramID,
 		"query":       query,
 		"limit":       limit,
-	}
-	err := doJSON("POST", docsHelperURL+"/api/v1/search", body, &resp)
+	}, &resp)
 	return resp.Results, err
 }
 
 // --- DeepSeek ---
 
 type sourceInfo struct {
-	Doc   string
-	Page  int
+	Doc  string
+	Page int
 }
 
 func askDeepSeek(query string, results []searchResult) (string, []sourceInfo) {
 	var ctx strings.Builder
 	sources := make([]sourceInfo, 0, len(results))
-
 	for i, r := range results {
 		name := r.DocName
 		if name == "" {
@@ -241,7 +241,7 @@ func askDeepSeek(query string, results []searchResult) (string, []sourceInfo) {
 	body := map[string]any{
 		"model": deepseekModel,
 		"messages": []map[string]string{
-			{"role": "system", "content": "Ты отвечаешь только на основе предоставленных фрагментов документов. Будь точен, указывай источники. При противоречиях приводи все варианты."},
+			{"role": "system", "content": "Ты отвечаешь только на основе предоставленных фрагментов. Будь точен, указывай источники. При противоречиях приводи все варианты."},
 			{"role": "user", "content": prompt},
 		},
 	}
@@ -251,44 +251,28 @@ func askDeepSeek(query string, results []searchResult) (string, []sourceInfo) {
 			Message struct{ Content string `json:"content"` } `json:"message"`
 		} `json:"choices"`
 	}
-
 	if err := doJSONWithAuth("POST", deepseekURL+"/chat/completions", body, &resp, deepseekKey); err != nil {
 		return "❌ Ошибка генерации ответа.", sources
 	}
-
 	if len(resp.Choices) == 0 {
 		return "Не удалось сформировать ответ.", sources
 	}
-
 	return resp.Choices[0].Message.Content, sources
 }
 
 // --- HTTP helpers ---
 
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 func doGET(url string) {
-	resp, _ := http.Get(url)
+	resp, _ := httpClient.Get(url)
 	if resp != nil {
 		resp.Body.Close()
 	}
 }
 
 func doJSON(method, url string, body, into any) error {
-	var r io.Reader
-	if body != nil {
-		data, _ := json.Marshal(body)
-		r = bytes.NewReader(data)
-	}
-	req, _ := http.NewRequest(method, url, r)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if into != nil {
-		json.NewDecoder(resp.Body).Decode(into)
-	}
-	return nil
+	return doJSONWithAuth(method, url, body, into, "")
 }
 
 func doJSONWithAuth(method, url string, body, into any, apiKey string) error {
@@ -299,14 +283,24 @@ func doJSONWithAuth(method, url string, body, into any, apiKey string) error {
 	}
 	req, _ := http.NewRequest(method, url, r)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := http.DefaultClient.Do(req)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("http: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("http %d: %s", resp.StatusCode, string(bodyBytes))
+	}
 	if into != nil {
-		json.NewDecoder(resp.Body).Decode(into)
+		if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
+			return fmt.Errorf("decode: %w", err)
+		}
 	}
 	return nil
 }
