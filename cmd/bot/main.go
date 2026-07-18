@@ -252,7 +252,7 @@ func askDeepSeek(query string, results []searchResult) (string, []sourceInfo) {
 		} `json:"choices"`
 	}
 	if err := doJSONWithAuth("POST", deepseekURL+"/chat/completions", body, &resp, deepseekKey); err != nil {
-		return "❌ Ошибка генерации ответа.", sources
+		return "❌ Ошибка генерации ответа: " + err.Error(), sources
 	}
 	if len(resp.Choices) == 0 {
 		return "Не удалось сформировать ответ.", sources
