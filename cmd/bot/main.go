@@ -135,7 +135,7 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		}
 
 		c.Bot().Edit(msg, "🤔 Анализирую...")
-		answer, sources := askDeepSeek(query, results)
+		answer, sources := askDeepSeek(log, query, results)
 
 		var sb strings.Builder
 		sb.WriteString(answer)
@@ -216,16 +216,26 @@ type sourceInfo struct {
 	Page int
 }
 
-func askDeepSeek(query string, results []searchResult) (string, []sourceInfo) {
+func askDeepSeek(log *slog.Logger, query string, results []searchResult) (string, []sourceInfo) {
 	var ctx strings.Builder
-	sources := make([]sourceInfo, 0, len(results))
+	seen := make(map[string]bool)
+	var sources []sourceInfo
+
 	for i, r := range results {
 		name := r.DocName
 		if name == "" {
 			name = fmt.Sprintf("документ-%d", r.Chunk.DocID)
 		}
-		sources = append(sources, sourceInfo{Doc: name, Page: r.Chunk.PageNum})
+		// Always include in context for DeepSeek
 		ctx.WriteString(fmt.Sprintf("\n[Источник %d: %s, стр. %d]\n%s\n", i+1, name, r.Chunk.PageNum, r.Chunk.Text))
+
+		// Deduplicate displayed sources
+		key := fmt.Sprintf("%s|%d", name, r.Chunk.PageNum)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		sources = append(sources, sourceInfo{Doc: name, Page: r.Chunk.PageNum})
 	}
 
 	prompt := fmt.Sprintf(`Ты — ассистент, отвечающий ТОЛЬКО на основе предоставленных документов.
@@ -252,7 +262,8 @@ func askDeepSeek(query string, results []searchResult) (string, []sourceInfo) {
 		} `json:"choices"`
 	}
 	if err := doJSONWithAuth("POST", deepseekURL+"/chat/completions", body, &resp, deepseekKey); err != nil {
-		return "❌ Ошибка генерации ответа: " + err.Error(), sources
+		log.Error("deepseek", "error", err)
+		return "❌ Ошибка генерации ответа. Попробуйте позже.", sources
 	}
 	if len(resp.Choices) == 0 {
 		return "Не удалось сформировать ответ.", sources
@@ -295,7 +306,8 @@ func doJSONWithAuth(method, url string, body, into any, apiKey string) error {
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("http %d: %s", resp.StatusCode, string(bodyBytes))
+		fmt.Fprintf(os.Stderr, "http error %s %s: %d %s\n", method, url, resp.StatusCode, string(bodyBytes))
+		return fmt.Errorf("http %d", resp.StatusCode)
 	}
 	if into != nil {
 		if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
