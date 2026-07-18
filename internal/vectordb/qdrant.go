@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/amantur/docs-helper/internal/models"
@@ -23,17 +24,17 @@ type VectorDB interface {
 
 // QdrantClient implements VectorDB against the Qdrant REST API.
 type QdrantClient struct {
-	log    *slog.Logger
-	url    string
-	client *http.Client
+	log     *slog.Logger
+	baseURL string
+	client  *http.Client
 }
 
 // New creates a new Qdrant REST client.
 func New(log *slog.Logger, qdrantURL string) VectorDB {
 	return &QdrantClient{
-		log:    log,
-		url:    strings.TrimRight(qdrantURL, "/"),
-		client: &http.Client{},
+		log:     log,
+		baseURL: strings.TrimRight(qdrantURL, "/"),
+		client:  &http.Client{},
 	}
 }
 
@@ -53,7 +54,7 @@ type upsertRequest struct {
 }
 
 type point struct {
-	ID      string       `json:"id"`
+	ID      uint64       `json:"id"`
 	Vector  []float32    `json:"vector"`
 	Payload pointPayload `json:"payload"`
 }
@@ -96,41 +97,45 @@ type searchResponse struct {
 }
 
 type scoredPoint struct {
-	ID      string       `json:"id"`
-	Score   float64      `json:"score"`
+	ID      uint64       `json:"id"`
+	Version int          `json:"version"`
+	Score   float32      `json:"score"`
 	Payload pointPayload `json:"payload"`
 }
 
 // EnsureCollection creates the collection if it doesn't exist. Idempotent.
 func (c *QdrantClient) EnsureCollection(ctx context.Context, collectionName string, vectorSize int) error {
-	body := collectionRequest{
+	req := collectionRequest{
 		Vectors: collectionVectors{
 			Size:     vectorSize,
 			Distance: "Cosine",
 		},
 	}
 
-	resp, err := c.do(ctx, http.MethodPut, "/collections/"+collectionName, body)
+	resp, err := c.do(ctx, http.MethodPut, "/collections/"+collectionName, req)
 	if err != nil {
 		return fmt.Errorf("ensure collection: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// 200 = created, 409 = already exists — both are fine.
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusConflict {
-		return nil
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ensure collection: unexpected status %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	respBody, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("ensure collection: unexpected status %d: %s", resp.StatusCode, string(respBody))
+	return nil
 }
 
 // Upsert inserts or updates chunk points in the collection.
 func (c *QdrantClient) Upsert(ctx context.Context, collectionName string, chunks []models.Chunk) error {
 	points := make([]point, len(chunks))
 	for i, ch := range chunks {
+		id, err := strconv.ParseUint(ch.ID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid chunk id %q: %w", ch.ID, err)
+		}
 		points[i] = point{
-			ID:     ch.ID,
+			ID:     id,
 			Vector: ch.Embedding,
 			Payload: pointPayload{
 				DocID:      ch.DocID,
@@ -190,7 +195,7 @@ func (c *QdrantClient) Search(ctx context.Context, collectionName string, queryV
 	for i, sp := range sr.Result {
 		results[i] = models.SearchResult{
 			Chunk: models.Chunk{
-				ID:         sp.ID,
+				ID:         fmt.Sprintf("%d", sp.ID),
 				DocID:      sp.Payload.DocID,
 				UserID:     sp.Payload.UserID,
 				Text:       sp.Payload.Text,
@@ -198,7 +203,7 @@ func (c *QdrantClient) Search(ctx context.Context, collectionName string, queryV
 				Section:    sp.Payload.Section,
 				ChunkIndex: sp.Payload.ChunkIndex,
 			},
-			Score: float32(sp.Score),
+			Score: sp.Score,
 		}
 	}
 
@@ -231,6 +236,8 @@ func (c *QdrantClient) DeleteByDocument(ctx context.Context, collectionName stri
 
 // do sends an HTTP request with a JSON body and returns the response.
 func (c *QdrantClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	url := c.baseURL + path
+
 	var bodyReader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -240,7 +247,7 @@ func (c *QdrantClient) do(ctx context.Context, method, path string, body any) (*
 		bodyReader = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.url+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
