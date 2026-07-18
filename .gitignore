@@ -1,0 +1,18 @@
+# Binaries
+/docs-helper
+/hermes-proxy
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+data/
