@@ -22,6 +22,9 @@ services:
       - docs-data:/data
     restart: unless-stopped
 
+    networks:
+      - default
+      - dokploy
   postgres:
     image: postgres:17-alpine
     environment:
@@ -78,3 +81,9 @@ volumes:
   minio-data:
   docs-data:
   ollama-data:
+
+
+networks:
+  dokploy:
+    external: true
+    name: dokploy-network
