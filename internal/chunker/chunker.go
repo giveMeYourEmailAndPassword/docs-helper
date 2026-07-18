@@ -158,7 +158,7 @@ func (c *chunker) finalizeChunk(docID, userID int64, index int, words []string, 
 	}
 
 	return models.Chunk{
-		ID:         fmt.Sprintf("%d-%d", docID, index),
+		ID:         fmt.Sprintf("%016x-%04x-4000-8000-%012x", uint64(docID), uint16(index), uint64(index)),
 		DocID:      docID,
 		UserID:     userID,
 		Text:       text,
