@@ -147,7 +147,10 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		for _, s := range sources {
 			sb.WriteString(fmt.Sprintf("\n• %s, стр. %d", s.Doc, s.Page))
 		}
-		c.Bot().Edit(msg, sb.String())
+		if _, err := c.Bot().Edit(msg, sb.String()); err != nil {
+			log.Error("edit failed, fallback to send", "error", err)
+			c.Bot().Send(c.Recipient(), sb.String())
+		}
 		return nil
 	}
 }
