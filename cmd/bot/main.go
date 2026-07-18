@@ -45,8 +45,10 @@ func main() {
 	}
 
 	b.Handle("/start", makeStartHandler())
+	b.Handle("/documents", makeDocsListHandler(log))
 	b.Handle(tele.OnDocument, makeDocHandler(log))
 	b.Handle(tele.OnText, makeTextHandler(log))
+	b.Handle(tele.OnCallback, makeCallbackHandler(log))
 
 	log.Info("bot started")
 	b.Start()
@@ -56,7 +58,65 @@ func makeStartHandler() tele.HandlerFunc {
 	return func(c tele.Context) error {
 		u := c.Sender()
 		doGET(fmt.Sprintf("%s/api/v1/documents?telegram_id=%d&username=%s", docsHelperURL, u.ID, u.Username))
-		return c.Send("Привет! Я бот для поиска по документам.\n\nЗагрузи PDF или DOCX, затем задай вопрос.")
+
+		menu := &tele.ReplyMarkup{ResizeKeyboard: true}
+		menu.Reply(menu.Row(menu.Text("📚 Мои документы")))
+
+		return c.Send("Привет! Я бот для поиска по документам.\n\nЗагрузи PDF или DOCX, затем задай вопрос.", menu)
+	}
+}
+
+func makeDocsListHandler(log *slog.Logger) tele.HandlerFunc {
+	return func(c tele.Context) error {
+		docs, err := listDocs(c.Sender().ID)
+		if err != nil || len(docs) == 0 {
+			return c.Send("У вас пока нет загруженных документов.")
+		}
+
+		var lines []string
+		for _, d := range docs {
+			status := "✅"
+			if d.Status == "error" {
+				status = "❌"
+			} else if d.Status != "ready" {
+				status = "⏳"
+			}
+			lines = append(lines, fmt.Sprintf("%s %s", status, d.Name))
+		}
+
+		selector := &tele.ReplyMarkup{}
+		var rows []tele.Row
+		for _, d := range docs {
+			btn := selector.Data("🗑 "+d.Name, "del", fmt.Sprintf("%d", d.ID))
+			rows = append(rows, selector.Row(btn))
+		}
+		selector.Inline(rows...)
+
+		return c.Send("📚 *Ваши документы:*\n\n"+strings.Join(lines, "\n"), &tele.SendOptions{
+			ParseMode: tele.ModeMarkdown,
+			ReplyMarkup: selector,
+		})
+	}
+}
+
+func makeCallbackHandler(log *slog.Logger) tele.HandlerFunc {
+	return func(c tele.Context) error {
+		data := c.Data()
+		if !strings.HasPrefix(data, "del|") {
+			return c.Respond()
+		}
+		docID := strings.TrimPrefix(data, "del|")
+
+		user := c.Sender()
+		url := fmt.Sprintf("%s/api/v1/documents/%s?telegram_id=%d", docsHelperURL, docID, user.ID)
+		req, _ := http.NewRequest("DELETE", url, nil)
+		resp, err := httpClient.Do(req)
+		if err != nil || resp.StatusCode >= 400 {
+			return c.Respond(&tele.CallbackResponse{Text: "❌ Ошибка удаления"})
+		}
+		resp.Body.Close()
+
+		return c.Respond(&tele.CallbackResponse{Text: "✅ Удалено"})
 	}
 }
 
@@ -143,12 +203,14 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		log.Info("deepseek done", "answer_len", len(answer))
 		var sb strings.Builder
 		sb.WriteString(answer)
-		sb.WriteString("\n\n📎 *Источники:*")
-		for _, s := range sources {
-			sb.WriteString(fmt.Sprintf("\n• %s, стр. %d", s.Doc, s.Page))
+		if len(sources) > 0 {
+			sb.WriteString("\n\n📎 *Источники:*")
+			for _, s := range sources {
+				sb.WriteString(fmt.Sprintf("\n• %s, %s", s.Doc, s.Ref))
+			}
 		}
-		if _, err := c.Bot().Edit(msg, sb.String()); err != nil {
-			log.Error("edit failed, fallback to send", "error", err)
+		if _, err := c.Bot().Edit(msg, sb.String(), &tele.SendOptions{ParseMode: tele.ModeMarkdown}); err != nil {
+			log.Error("edit failed, fallback send", "error", err)
 			c.Bot().Send(c.Recipient(), sb.String())
 		}
 		return nil
@@ -168,8 +230,7 @@ func uploadFile(telegramID int64, username, filename string, data []byte) (int64
 	req, _ := http.NewRequest("POST", url, &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("upload: %w", err)
 	}
@@ -193,6 +254,18 @@ func getDocStatus(docID int64) (string, error) {
 	return doc.Status, err
 }
 
+func listDocs(telegramID int64) ([]docInfo, error) {
+	var docs []docInfo
+	err := doJSON("GET", fmt.Sprintf("%s/api/v1/documents?telegram_id=%d", docsHelperURL, telegramID), nil, &docs)
+	return docs, err
+}
+
+type docInfo struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"original_name"`
+	Status string `json:"status"`
+}
+
 type searchResult struct {
 	Chunk   chunk   `json:"chunk"`
 	Score   float32 `json:"score"`
@@ -201,7 +274,15 @@ type searchResult struct {
 type chunk struct {
 	Text    string `json:"text"`
 	PageNum int    `json:"page_num"`
+	Section string `json:"section"`
 	DocID   int64  `json:"doc_id"`
+}
+
+func (ch chunk) sourceRef() string {
+	if ch.Section != "" {
+		return ch.Section
+	}
+	return fmt.Sprintf("стр. %d", ch.PageNum)
 }
 
 func searchDocs(telegramID int64, query string, limit int) ([]searchResult, error) {
@@ -219,8 +300,8 @@ func searchDocs(telegramID int64, query string, limit int) ([]searchResult, erro
 // --- DeepSeek ---
 
 type sourceInfo struct {
-	Doc  string
-	Page int
+	Doc string
+	Ref string
 }
 
 func askDeepSeek(log *slog.Logger, query string, results []searchResult) (string, []sourceInfo) {
@@ -233,16 +314,15 @@ func askDeepSeek(log *slog.Logger, query string, results []searchResult) (string
 		if name == "" {
 			name = fmt.Sprintf("документ-%d", r.Chunk.DocID)
 		}
-		// Always include in context for DeepSeek
-		ctx.WriteString(fmt.Sprintf("\n[Источник %d: %s, стр. %d]\n%s\n", i+1, name, r.Chunk.PageNum, r.Chunk.Text))
+		ref := r.Chunk.sourceRef()
+		ctx.WriteString(fmt.Sprintf("\n[Источник %d: %s, %s]\n%s\n", i+1, name, ref, r.Chunk.Text))
 
-		// Deduplicate displayed sources
-		key := fmt.Sprintf("%s|%d", name, r.Chunk.PageNum)
+		key := fmt.Sprintf("%s|%s", name, ref)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		sources = append(sources, sourceInfo{Doc: name, Page: r.Chunk.PageNum})
+		sources = append(sources, sourceInfo{Doc: name, Ref: ref})
 	}
 
 	prompt := fmt.Sprintf(`Ты — ассистент, отвечающий ТОЛЬКО на основе предоставленных документов.

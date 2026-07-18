@@ -245,11 +245,27 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// DELETE /api/v1/documents/{id}
+// DELETE /api/v1/documents/{id}?telegram_id=...
 func (h *handler) deleteDocument(w http.ResponseWriter, r *http.Request) {
 	id, err := parsePathID(r, "id")
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid document id")
+		return
+	}
+
+	user, err := h.resolveUser(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid telegram_id")
+		return
+	}
+
+	doc, err := h.storage.GetDocument(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "document not found")
+		return
+	}
+	if doc.UserID != user.ID {
+		writeError(w, http.StatusForbidden, "not your document")
 		return
 	}
 
