@@ -147,7 +147,7 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		for _, s := range sources {
 			sb.WriteString(fmt.Sprintf("\n• %s, стр. %d", s.Doc, s.Page))
 		}
-		c.Bot().Edit(msg, sb.String(), &tele.SendOptions{ParseMode: tele.ModeMarkdown})
+		c.Bot().Edit(msg, sb.String())
 		return nil
 	}
 }
