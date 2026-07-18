@@ -220,7 +220,7 @@ func (c *QdrantClient) DeleteByDocument(ctx context.Context, collectionName stri
 		},
 	}
 
-	resp, err := c.do(ctx, http.MethodPost, "/collections/"+collectionName+"/points/delete", body)
+	resp, err := c.do(ctx, http.MethodPost, "/collections/"+collectionName+"/points/delete?wait=true", body)
 	if err != nil {
 		return fmt.Errorf("delete by document: %w", err)
 	}
