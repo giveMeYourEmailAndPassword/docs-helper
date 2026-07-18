@@ -314,9 +314,10 @@ func sanitizeFilename(name string) string {
 		body = "document"
 	}
 
-	// Keep extension safe too
+	// Keep extension: lowercase, alphanumeric plus dot
+	ext = strings.ToLower(ext)
 	ext = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' {
 			return r
 		}
 		return '_'
