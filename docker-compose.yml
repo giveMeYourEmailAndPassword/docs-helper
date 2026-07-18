@@ -23,6 +23,21 @@ services:
       - default
       - dokploy
 
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    environment:
+      - DOCS_HELPER_URL=http://docs-helper:8080
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    depends_on:
+      - docs-helper
+    restart: unless-stopped
+
   postgres:
     image: postgres:17-alpine
     environment:
