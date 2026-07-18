@@ -6,10 +6,6 @@ services:
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER:-docs}:${POSTGRES_PASSWORD:-docs}@postgres:5432/${POSTGRES_DB:-docs_helper}?sslmode=disable
       - QDRANT_URL=http://qdrant:6333
-      - S3_ENDPOINT=minio:9000
-      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
-      - S3_BUCKET=docs
       - OPENAI_API_KEY=ollama
       - OPENAI_BASE_URL=http://ollama:11434/v1
       - EMBEDDING_MODEL=nomic-embed-text
@@ -56,9 +52,7 @@ services:
     volumes:
       - minio-data:/data
 
-
   ollama:
-    image: ollama/ollama:latest
     ports: []
     volumes:
       - ollama-data:/root/.ollama

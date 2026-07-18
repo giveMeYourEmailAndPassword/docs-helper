@@ -98,9 +98,9 @@ type handler struct {
 
 // POST /api/v1/documents
 func (h *handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
-	userID, err := parseUserID(r)
+	user, err := h.resolveUser(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user_id")
+		writeError(w, http.StatusBadRequest, "invalid telegram_id")
 		return
 	}
 
@@ -118,7 +118,7 @@ func (h *handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 
 	// Save locally under /data volume
 	baseDir := "/data/documents"
-	userDir := fmt.Sprintf("%s/%d", baseDir, userID)
+	userDir := fmt.Sprintf("%s/%d", baseDir, user.ID)
 	if err := os.MkdirAll(userDir, 0755); err != nil {
 		h.log.Error("create user dir", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to store file")
@@ -145,7 +145,7 @@ func (h *handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	// Detect file type
 	fileType := detectFileType(header.Filename)
 
-	doc, err := h.storage.CreateDocument(r.Context(), userID, header.Filename, storagePath, fileType)
+	doc, err := h.storage.CreateDocument(r.Context(), user.ID, header.Filename, storagePath, fileType)
 	if err != nil {
 		h.log.Error("create document", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create document")
@@ -180,15 +180,15 @@ func (h *handler) getDocument(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-// GET /api/v1/documents?user_id=...
+// GET /api/v1/documents?telegram_id=...
 func (h *handler) listDocuments(w http.ResponseWriter, r *http.Request) {
-	userID, err := parseUserID(r)
+	user, err := h.resolveUser(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user_id")
+		writeError(w, http.StatusBadRequest, "invalid telegram_id")
 		return
 	}
 
-	docs, err := h.storage.GetUserDocuments(r.Context(), userID)
+	docs, err := h.storage.GetUserDocuments(r.Context(), user.ID)
 	if err != nil {
 		h.log.Error("list documents", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list documents")
@@ -201,9 +201,10 @@ func (h *handler) listDocuments(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/search
 func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		UserID int64  `json:"user_id"`
-		Query  string `json:"query"`
-		Limit  int    `json:"limit"`
+		TelegramID int64  `json:"telegram_id"`
+		Username   string `json:"username"`
+		Query      string `json:"query"`
+		Limit      int    `json:"limit"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -218,7 +219,14 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 		req.Limit = 10
 	}
 
-	results, err := h.pipeline.Search(r.Context(), req.UserID, req.Query, req.Limit)
+	user, err := h.storage.GetOrCreateUser(r.Context(), req.TelegramID, req.Username)
+	if err != nil {
+		h.log.Error("get or create user", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve user")
+		return
+	}
+
+	results, err := h.pipeline.Search(r.Context(), user.ID, req.Query, req.Limit)
 	if err != nil {
 		h.log.Error("search failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "search failed")
@@ -261,9 +269,13 @@ func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers ---
 
-func parseUserID(r *http.Request) (int64, error) {
-	v := r.URL.Query().Get("user_id")
-	return strconv.ParseInt(v, 10, 64)
+func (h *handler) resolveUser(r *http.Request) (*models.User, error) {
+	telegramID, err := strconv.ParseInt(r.URL.Query().Get("telegram_id"), 10, 64)
+	if err != nil || telegramID == 0 {
+		return nil, fmt.Errorf("invalid telegram_id")
+	}
+	username := r.URL.Query().Get("username")
+	return h.storage.GetOrCreateUser(r.Context(), telegramID, username)
 }
 
 func parsePathID(r *http.Request, name string) (int64, error) {
