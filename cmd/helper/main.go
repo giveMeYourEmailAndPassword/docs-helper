@@ -279,7 +279,9 @@ func (h *handler) deleteDocument(w http.ResponseWriter, r *http.Request) {
 
 	// Delete file from disk
 	if err := os.Remove(doc.StoragePath); err != nil && !os.IsNotExist(err) {
-		h.log.Warn("file delete failed", "path", doc.StoragePath, "error", err)
+		h.log.Error("file delete failed", "path", doc.StoragePath, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete document file")
+		return
 	}
 	if err := h.storage.DeleteDocument(r.Context(), id); err != nil {
 		h.log.Error("delete document", "error", err)
