@@ -54,7 +54,7 @@ func main() {
 
 	// HTTP server
 	mux := http.NewServeMux()
-	h := &handler{log: log, storage: st, pipeline: pl, cfg: cfg}
+	h := &handler{log: log, storage: st, pipeline: pl, cfg: cfg, vectordb: v}
 
 	mux.HandleFunc("POST /api/v1/documents", h.uploadDocument)
 	mux.HandleFunc("GET /api/v1/documents/{id}", h.getDocument)
@@ -94,6 +94,7 @@ type handler struct {
 	storage  storage.Storage
 	pipeline *pipeline.Pipeline
 	cfg      *config.Config
+	vectordb vectordb.VectorDB
 }
 
 // POST /api/v1/documents
@@ -268,6 +269,9 @@ func (h *handler) deleteDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not your document")
 		return
 	}
+
+	// Delete vectors from Qdrant first
+	_ = h.vectordb.DeleteByDocument(r.Context(), "docs_chunks", id)
 
 	if err := h.storage.DeleteDocument(r.Context(), id); err != nil {
 		h.log.Error("delete document", "error", err)

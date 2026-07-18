@@ -48,7 +48,7 @@ func main() {
 	b.Handle("/documents", makeDocsListHandler(log))
 	b.Handle(tele.OnDocument, makeDocHandler(log))
 	b.Handle(tele.OnText, makeTextHandler(log))
-	b.Handle(tele.OnCallback, makeCallbackHandler(log))
+	b.Handle(tele.OnCallback, makeCallbackHandler(log, b))
 
 	log.Info("bot started")
 	b.Start()
@@ -68,38 +68,36 @@ func makeStartHandler() tele.HandlerFunc {
 
 func makeDocsListHandler(log *slog.Logger) tele.HandlerFunc {
 	return func(c tele.Context) error {
-		docs, err := listDocs(c.Sender().ID)
-		if err != nil || len(docs) == 0 {
-			return c.Send("У вас пока нет загруженных документов.")
-		}
-
-		var lines []string
-		for _, d := range docs {
-			status := "✅"
-			if d.Status == "error" {
-				status = "❌"
-			} else if d.Status != "ready" {
-				status = "⏳"
-			}
-			lines = append(lines, fmt.Sprintf("%s %s", status, d.Name))
-		}
-
-		selector := &tele.ReplyMarkup{}
-		var rows []tele.Row
-		for _, d := range docs {
-			btn := selector.Data("🗑 "+d.Name, "del", fmt.Sprintf("%d", d.ID))
-			rows = append(rows, selector.Row(btn))
-		}
-		selector.Inline(rows...)
-
-		return c.Send("📚 *Ваши документы:*\n\n"+strings.Join(lines, "\n"), &tele.SendOptions{
-			ParseMode: tele.ModeMarkdown,
-			ReplyMarkup: selector,
-		})
+		return showDocsList(c)
 	}
 }
 
-func makeCallbackHandler(log *slog.Logger) tele.HandlerFunc {
+func showDocsList(c tele.Context) error {
+	docs, err := listDocs(c.Sender().ID)
+	if err != nil || len(docs) == 0 {
+		return c.Send("У вас пока нет загруженных документов.")
+	}
+
+	var lines []string
+	selector := &tele.ReplyMarkup{}
+	var rows []tele.Row
+	for _, d := range docs {
+		status := "✅"
+		if d.Status == "error" {
+			status = "❌"
+		} else if d.Status != "ready" {
+			status = "⏳"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s", status, d.Name))
+		btn := selector.Data("🗑 "+d.Name, "del", fmt.Sprintf("%d", d.ID))
+		rows = append(rows, selector.Row(btn))
+	}
+	selector.Inline(rows...)
+
+	return c.Send("📚 Ваши документы:\n\n"+strings.Join(lines, "\n"), selector)
+}
+
+func makeCallbackHandler(log *slog.Logger, bot *tele.Bot) tele.HandlerFunc {
 	return func(c tele.Context) error {
 		data := c.Data()
 		if !strings.HasPrefix(data, "del|") {
@@ -112,10 +110,33 @@ func makeCallbackHandler(log *slog.Logger) tele.HandlerFunc {
 		req, _ := http.NewRequest("DELETE", url, nil)
 		resp, err := httpClient.Do(req)
 		if err != nil || resp.StatusCode >= 400 {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ Ошибка удаления"})
+			return c.Respond(&tele.CallbackResponse{Text: "❌ Ошибка"})
 		}
 		resp.Body.Close()
 
+		// Refresh the document list in-place
+		docs, _ := listDocs(user.ID)
+		if len(docs) == 0 {
+			bot.Edit(c.Message(), "Документы удалены.")
+			return c.Respond(&tele.CallbackResponse{Text: "✅ Удалено"})
+		}
+
+		var lines []string
+		selector := &tele.ReplyMarkup{}
+		var rows []tele.Row
+		for _, d := range docs {
+			status := "✅"
+			if d.Status == "error" {
+				status = "❌"
+			} else if d.Status != "ready" {
+				status = "⏳"
+			}
+			lines = append(lines, fmt.Sprintf("%s %s", status, d.Name))
+			btn := selector.Data("🗑 "+d.Name, "del", fmt.Sprintf("%d", d.ID))
+			rows = append(rows, selector.Row(btn))
+		}
+		selector.Inline(rows...)
+		bot.Edit(c.Message(), "📚 Ваши документы:\n\n"+strings.Join(lines, "\n"), selector)
 		return c.Respond(&tele.CallbackResponse{Text: "✅ Удалено"})
 	}
 }
@@ -186,6 +207,10 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		if query == "" {
 			return nil
 		}
+		if query == "📚 Мои документы" {
+			return showDocsList(c)
+		}
+
 		msg, _ := c.Bot().Send(c.Recipient(), "🔎 Ищу информацию...")
 
 		log.Info("searching", "query", query)
@@ -204,12 +229,12 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		var sb strings.Builder
 		sb.WriteString(answer)
 		if len(sources) > 0 {
-			sb.WriteString("\n\n📎 *Источники:*")
+			sb.WriteString("\n\n📎 Источники:")
 			for _, s := range sources {
 				sb.WriteString(fmt.Sprintf("\n• %s, %s", s.Doc, s.Ref))
 			}
 		}
-		if _, err := c.Bot().Edit(msg, sb.String(), &tele.SendOptions{ParseMode: tele.ModeMarkdown}); err != nil {
+		if _, err := c.Bot().Edit(msg, sb.String()); err != nil {
 			log.Error("edit failed, fallback send", "error", err)
 			c.Bot().Send(c.Recipient(), sb.String())
 		}
