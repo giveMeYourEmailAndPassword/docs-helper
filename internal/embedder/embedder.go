@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -25,25 +26,49 @@ type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+type adapterType int
+
+const (
+	adapterOpenAI adapterType = iota
+	adapterOllama
+)
+
 type embedder struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	httpClient *http.Client
-	log        *slog.Logger
+	log      *slog.Logger
+	baseURL  string
+	apiKey   string
+	model    string
+	adapter  adapterType
+	client   *http.Client
 }
 
 // New creates an Embedder backed by an OpenAI-compatible API.
 func New(log *slog.Logger, baseURL, apiKey, model string) Embedder {
+	adapter := adapterOpenAI
+	if baseURL == "" || strings.Contains(baseURL, "ollama") || strings.Contains(baseURL, "11434") {
+		adapter = adapterOllama
+	}
 	return &embedder{
-		baseURL: baseURL,
+		log:     log,
+		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		model:   model,
-		httpClient: &http.Client{
-			Timeout: requestTimeout,
-		},
-		log: log,
+		adapter: adapter,
+		client:  &http.Client{Timeout: requestTimeout},
 	}
+}
+
+func (e *embedder) buildURL() string {
+	if e.adapter == adapterOllama {
+		// Strip /v1 suffix added by compose config, use native API
+		base := strings.TrimSuffix(e.baseURL, "/v1")
+		return base + "/api/embed"
+	}
+	return e.baseURL + "/embeddings"
+}
+
+type ollamaEmbedResponse struct {
+	Embeddings [][]float32 `json:"embeddings"`
 }
 
 type embeddingRequest struct {
@@ -96,7 +121,7 @@ func (e *embedder) embedBatch(ctx context.Context, texts []string) ([][]float32,
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := e.baseURL + "/embeddings"
+	url := e.buildURL()
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -145,7 +170,7 @@ func (e *embedder) doRequest(ctx context.Context, url string, body []byte) (*htt
 	req.Header.Set("Authorization", "Bearer "+e.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	return e.httpClient.Do(req)
+	return e.client.Do(req)
 }
 
 func (e *embedder) parseResponse(resp *http.Response) ([][]float32, error) {
@@ -154,6 +179,14 @@ func (e *embedder) parseResponse(resp *http.Response) ([][]float32, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if e.adapter == adapterOllama {
+		var embResp ollamaEmbedResponse
+		if err := json.Unmarshal(body, &embResp); err != nil {
+			return nil, fmt.Errorf("unmarshal ollama response: %w", err)
+		}
+		return embResp.Embeddings, nil
 	}
 
 	var embResp embeddingResponse
