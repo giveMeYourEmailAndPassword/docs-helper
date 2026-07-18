@@ -5,7 +5,7 @@ services:
       - "8080:8080"
     environment:
       - DATABASE_URL=postgres://docs:docs@postgres:5432/docs_helper?sslmode=disable
-      - QDRANT_URL=http://qdrant:6334
+      - QDRANT_URL=http://qdrant:6333
       - S3_ENDPOINT=minio:9000
       - S3_ACCESS_KEY=minioadmin
       - S3_SECRET_KEY=minioadmin
