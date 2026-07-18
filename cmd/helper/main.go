@@ -45,7 +45,7 @@ func main() {
 
 	// Core services
 	p := parser.New(log)
-	c := chunker.New(log, 500, 50)
+	c := chunker.New(log, 500, 150)
 	e := embedder.New(log, cfg.OpenAIBaseURL, cfg.OpenAIKey, cfg.EmbeddingModel)
 	v := vectordb.New(log, cfg.QdrantURL)
 
