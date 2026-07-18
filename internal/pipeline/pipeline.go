@@ -65,10 +65,12 @@ func (pl *Pipeline) Process(ctx context.Context, docID int64, filePath string) e
 	defer f.Close()
 
 	parsed, err := pl.parser.Parse(ctx, f, filePath)
+	if err != nil {
+		_ = pl.storage.UpdateDocumentStatus(ctx, docID, models.StatusError, err.Error())
+		return fmt.Errorf("parse: %w", err)
+	}
 	parsed.DocID = docID
 	parsed.UserID = doc.UserID
-
-	pl.log.Info("document parsed", "doc_id", docID, "pages", len(parsed.Pages))
 
 	// Update pages count
 	if err := pl.storage.UpdatePagesCount(ctx, docID, len(parsed.Pages)); err != nil {
