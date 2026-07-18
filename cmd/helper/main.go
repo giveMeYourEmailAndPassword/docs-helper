@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -114,11 +116,31 @@ func (h *handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Save to S3/MinIO (placeholder: local storage for now)
-	storagePath := fmt.Sprintf("documents/%d/%s", userID, header.Filename)
-	// TODO: upload to S3; for now save locally
-	_ = storagePath
-	_ = file
+	// Save locally under /data volume
+	baseDir := "/data/documents"
+	userDir := fmt.Sprintf("%s/%d", baseDir, userID)
+	if err := os.MkdirAll(userDir, 0755); err != nil {
+		h.log.Error("create user dir", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store file")
+		return
+	}
+
+	safeName := sanitizeFilename(header.Filename)
+	storagePath := fmt.Sprintf("%s/%s", userDir, safeName)
+
+	dst, err := os.Create(storagePath)
+	if err != nil {
+		h.log.Error("create file", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store file")
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		h.log.Error("write file", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store file")
+		return
+	}
 
 	// Detect file type
 	fileType := detectFileType(header.Filename)
@@ -259,6 +281,36 @@ func detectFileType(filename string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// sanitizeFilename removes path separators and keeps only safe characters.
+func sanitizeFilename(name string) string {
+	base := filepath.Base(name)           // strip any directory components
+	ext := filepath.Ext(base)
+	body := strings.TrimSuffix(base, ext)
+
+	// Replace unsafe chars with underscore
+	body = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, body)
+
+	body = strings.Trim(body, "._-")
+	if body == "" {
+		body = "document"
+	}
+
+	// Keep extension safe too
+	ext = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, ext)
+
+	return body + ext
 }
 
 func groupByDoc(results []models.SearchResult) map[string][]models.SearchResult {
