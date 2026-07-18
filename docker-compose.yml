@@ -6,9 +6,9 @@ services:
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER:-docs}:${POSTGRES_PASSWORD:-docs}@postgres:5432/${POSTGRES_DB:-docs_helper}?sslmode=disable
       - QDRANT_URL=http://qdrant:6333
-      - OPENAI_API_KEY=ollama
-      - OPENAI_BASE_URL=http://ollama:11434/v1
-      - EMBEDDING_MODEL=nomic-embed-text
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - HTTP_PORT=8080
     depends_on:
@@ -16,15 +16,13 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
-      ollama-pull:
-        condition: service_completed_successfully
     volumes:
       - docs-data:/data
     restart: unless-stopped
-
     networks:
       - default
       - dokploy
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -44,6 +42,7 @@ services:
     image: qdrant/qdrant:v1.18.3
     volumes:
       - qdrant-data:/qdrant/storage
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -53,35 +52,11 @@ services:
     volumes:
       - minio-data:/data
 
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama-data:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  ollama-pull:
-    image: ollama/ollama:latest
-    command: pull nomic-embed-text
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    depends_on:
-      ollama:
-        condition: service_healthy
-    volumes:
-      - ollama-data:/root/.ollama
-
 volumes:
   pgdata:
   qdrant-data:
   minio-data:
   docs-data:
-  ollama-data:
-
 
 networks:
   dokploy:
