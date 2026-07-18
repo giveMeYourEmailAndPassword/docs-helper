@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	defaultBatchSize = 20
-	requestTimeout   = 60 * time.Second
-	maxRetries       = 3
+	defaultBatchSize    = 20
+	ollamaBatchSize     = 8
+	requestTimeout      = 60 * time.Second
+	ollamaRequestTimeout = 120 * time.Second
+	maxRetries          = 3
 )
 
 var backoffDelays = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
@@ -41,12 +43,12 @@ type embedder struct {
 	adapter  adapterType
 	client   *http.Client
 }
-
-// New creates an Embedder backed by an OpenAI-compatible API.
 func New(log *slog.Logger, baseURL, apiKey, model string) Embedder {
 	adapter := adapterOpenAI
+	timeout := requestTimeout
 	if baseURL == "" || strings.Contains(baseURL, "ollama") || strings.Contains(baseURL, "11434") {
 		adapter = adapterOllama
+		timeout = ollamaRequestTimeout
 	}
 	return &embedder{
 		log:     log,
@@ -54,7 +56,7 @@ func New(log *slog.Logger, baseURL, apiKey, model string) Embedder {
 		apiKey:  apiKey,
 		model:   model,
 		adapter: adapter,
-		client:  &http.Client{Timeout: requestTimeout},
+		client:  &http.Client{Timeout: timeout},
 	}
 }
 
@@ -91,9 +93,14 @@ func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 		return [][]float32{}, nil
 	}
 
+	batchSize := defaultBatchSize
+	if e.adapter == adapterOllama {
+		batchSize = ollamaBatchSize
+	}
+
 	var all [][]float32
-	for i := 0; i < len(texts); i += defaultBatchSize {
-		end := i + defaultBatchSize
+	for i := 0; i < len(texts); i += batchSize {
+		end := i + batchSize
 		if end > len(texts) {
 			end = len(texts)
 		}
@@ -148,6 +155,7 @@ func (e *embedder) embedBatch(ctx context.Context, texts []string) ([][]float32,
 
 		// Retry on 429 or 5xx.
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			resp.Body.Close()
 			lastErr = fmt.Errorf("server error: status %d", resp.StatusCode)
 			continue
 		}
