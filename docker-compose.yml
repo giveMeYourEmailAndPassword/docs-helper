@@ -2,7 +2,7 @@ services:
   docs-helper:
     build: .
     ports:
-      - "8080:8080"
+      - "8081:8080"
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER:-docs}:${POSTGRES_PASSWORD:-docs}@postgres:5432/${POSTGRES_DB:-docs_helper}?sslmode=disable
       - QDRANT_URL=http://qdrant:6333
