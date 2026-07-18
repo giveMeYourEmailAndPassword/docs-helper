@@ -39,7 +39,6 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.14
-    ports: []
     volumes:
       - qdrant-data:/qdrant/storage
 
@@ -53,7 +52,7 @@ services:
       - minio-data:/data
 
   ollama:
-    ports: []
+    image: ollama/ollama:latest
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
