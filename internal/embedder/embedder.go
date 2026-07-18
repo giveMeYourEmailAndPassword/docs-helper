@@ -10,9 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
-
 const (
 	defaultBatchSize    = 20
 	ollamaBatchSize     = 8
@@ -36,12 +36,14 @@ const (
 )
 
 type embedder struct {
-	log      *slog.Logger
-	baseURL  string
-	apiKey   string
-	model    string
-	adapter  adapterType
-	client   *http.Client
+	log     *slog.Logger
+	baseURL string
+	apiKey  string
+	model   string
+	adapter adapterType
+	client  *http.Client
+	cache   map[string][]float32
+	mu      sync.Mutex
 }
 func New(log *slog.Logger, baseURL, apiKey, model string) Embedder {
 	adapter := adapterOpenAI
@@ -57,6 +59,7 @@ func New(log *slog.Logger, baseURL, apiKey, model string) Embedder {
 		model:   model,
 		adapter: adapter,
 		client:  &http.Client{Timeout: timeout},
+		cache:   make(map[string][]float32),
 	}
 }
 
@@ -88,9 +91,19 @@ type embeddingData struct {
 }
 
 // Embed returns float32 embeddings for each input text, preserving order.
+// Single-text queries are cached to avoid redundant API calls.
 func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return [][]float32{}, nil
+	}
+
+	if len(texts) == 1 {
+		e.mu.Lock()
+		if emb, ok := e.cache[texts[0]]; ok {
+			e.mu.Unlock()
+			return [][]float32{emb}, nil
+		}
+		e.mu.Unlock()
 	}
 
 	batchSize := defaultBatchSize
@@ -111,6 +124,12 @@ func (e *embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 			return nil, fmt.Errorf("embedder: batch %d-%d: %w", i, end, err)
 		}
 		all = append(all, embeddings...)
+	}
+
+	if len(texts) == 1 && len(all) == 1 {
+		e.mu.Lock()
+		e.cache[texts[0]] = all[0]
+		e.mu.Unlock()
 	}
 
 	return all, nil

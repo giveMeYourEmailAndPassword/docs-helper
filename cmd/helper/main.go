@@ -216,8 +216,8 @@ func (h *handler) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query is required")
 		return
 	}
-	if req.Limit <= 0 || req.Limit > 20 {
-		req.Limit = 10
+	if req.Limit <= 0 || req.Limit > 50 {
+		req.Limit = 20
 	}
 
 	user, err := h.storage.GetOrCreateUser(r.Context(), req.TelegramID, req.Username)
