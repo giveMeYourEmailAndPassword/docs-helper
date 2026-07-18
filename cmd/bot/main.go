@@ -128,15 +128,19 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		}
 		msg, _ := c.Bot().Send(c.Recipient(), "🔎 Ищу информацию...")
 
+		log.Info("searching", "query", query)
 		results, err := searchDocs(c.Sender().ID, query, 10)
+		log.Info("search done", "results", len(results), "error", err)
 		if err != nil || len(results) == 0 {
 			c.Bot().Edit(msg, "В загруженных документах не найдено информации.")
 			return nil
 		}
 
+		log.Info("asking deepseek", "results", len(results))
 		c.Bot().Edit(msg, "🤔 Анализирую...")
 		answer, sources := askDeepSeek(log, query, results)
 
+		log.Info("deepseek done", "answer_len", len(answer))
 		var sb strings.Builder
 		sb.WriteString(answer)
 		sb.WriteString("\n\n📎 *Источники:*")
