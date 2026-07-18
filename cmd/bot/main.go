@@ -243,7 +243,7 @@ func makeTextHandler(log *slog.Logger) tele.HandlerFunc {
 		msg, _ := c.Bot().Send(c.Recipient(), "🔎 Ищу информацию...")
 
 		log.Info("searching", "query", query)
-		results, err := searchDocs(c.Sender().ID, query, 10)
+		results, err := searchDocs(c.Sender().ID, query, 20)
 		log.Info("search done", "results", len(results), "error", err)
 		if err != nil || len(results) == 0 {
 			c.Bot().Edit(msg, "В загруженных документах не найдено информации.")
