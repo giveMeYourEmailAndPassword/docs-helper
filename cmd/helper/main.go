@@ -270,9 +270,17 @@ func (h *handler) deleteDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete vectors from Qdrant first
-	_ = h.vectordb.DeleteByDocument(r.Context(), "docs_chunks", id)
+	// Delete vectors from Qdrant — fail if this doesn't work
+	if err := h.vectordb.DeleteByDocument(r.Context(), "docs_chunks", id); err != nil {
+		h.log.Error("qdrant delete failed", "doc_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to clean up document vectors")
+		return
+	}
 
+	// Delete file from disk
+	if err := os.Remove(doc.StoragePath); err != nil && !os.IsNotExist(err) {
+		h.log.Warn("file delete failed", "path", doc.StoragePath, "error", err)
+	}
 	if err := h.storage.DeleteDocument(r.Context(), id); err != nil {
 		h.log.Error("delete document", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete document")

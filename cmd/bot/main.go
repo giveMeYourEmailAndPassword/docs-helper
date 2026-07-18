@@ -100,45 +100,74 @@ func showDocsList(c tele.Context) error {
 func makeCallbackHandler(log *slog.Logger, bot *tele.Bot) tele.HandlerFunc {
 	return func(c tele.Context) error {
 		data := c.Data()
-		if !strings.HasPrefix(data, "del|") {
-			return c.Respond()
-		}
-		docID := strings.TrimPrefix(data, "del|")
 
-		user := c.Sender()
-		url := fmt.Sprintf("%s/api/v1/documents/%s?telegram_id=%d", docsHelperURL, docID, user.ID)
-		req, _ := http.NewRequest("DELETE", url, nil)
-		resp, err := httpClient.Do(req)
-		if err != nil || resp.StatusCode >= 400 {
-			return c.Respond(&tele.CallbackResponse{Text: "❌ Ошибка"})
+		// Confirm phase: user tapped delete, show confirm/cancel
+		if strings.HasPrefix(data, "del|") {
+			docID := strings.TrimPrefix(data, "del|")
+			selector := &tele.ReplyMarkup{}
+			selector.Inline(
+				selector.Row(
+					selector.Data("✅ Да, удалить", "confirm|"+docID),
+					selector.Data("❌ Отмена", "cancel"),
+				),
+			)
+			return c.Edit("Удалить документ?", selector)
 		}
-		resp.Body.Close()
 
-		// Refresh the document list in-place
-		docs, _ := listDocs(user.ID)
-		if len(docs) == 0 {
-			bot.Edit(c.Message(), "Документы удалены.")
+		// Confirm: execute delete
+		if strings.HasPrefix(data, "confirm|") {
+			docID := strings.TrimPrefix(data, "confirm|")
+			user := c.Sender()
+			url := fmt.Sprintf("%s/api/v1/documents/%s?telegram_id=%d", docsHelperURL, docID, user.ID)
+			req, _ := http.NewRequest("DELETE", url, nil)
+			resp, err := httpClient.Do(req)
+			if err != nil || resp.StatusCode >= 400 {
+				return c.Respond(&tele.CallbackResponse{Text: "❌ Ошибка"})
+			}
+			resp.Body.Close()
+
+			// Refresh list
+			docs, _ := listDocs(user.ID)
+			if len(docs) == 0 {
+				bot.Edit(c.Message(), "Документы удалены.")
+				return c.Respond(&tele.CallbackResponse{Text: "✅ Удалено"})
+			}
+			refreshDocsMessage(bot, c.Message(), docs)
 			return c.Respond(&tele.CallbackResponse{Text: "✅ Удалено"})
 		}
 
-		var lines []string
-		selector := &tele.ReplyMarkup{}
-		var rows []tele.Row
-		for _, d := range docs {
-			status := "✅"
-			if d.Status == "error" {
-				status = "❌"
-			} else if d.Status != "ready" {
-				status = "⏳"
+		// Cancel
+		if data == "cancel" {
+			docs, _ := listDocs(c.Sender().ID)
+			if len(docs) == 0 {
+				bot.Edit(c.Message(), "Документы удалены.")
+			} else {
+				refreshDocsMessage(bot, c.Message(), docs)
 			}
-			lines = append(lines, fmt.Sprintf("%s %s", status, d.Name))
-			btn := selector.Data("🗑 "+d.Name, "del", fmt.Sprintf("%d", d.ID))
-			rows = append(rows, selector.Row(btn))
+			return c.Respond()
 		}
-		selector.Inline(rows...)
-		bot.Edit(c.Message(), "📚 Ваши документы:\n\n"+strings.Join(lines, "\n"), selector)
-		return c.Respond(&tele.CallbackResponse{Text: "✅ Удалено"})
+
+		return c.Respond()
 	}
+}
+
+func refreshDocsMessage(bot *tele.Bot, msg *tele.Message, docs []docInfo) {
+	var lines []string
+	selector := &tele.ReplyMarkup{}
+	var rows []tele.Row
+	for _, d := range docs {
+		status := "✅"
+		if d.Status == "error" {
+			status = "❌"
+		} else if d.Status != "ready" {
+			status = "⏳"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s", status, d.Name))
+		btn := selector.Data("🗑 "+d.Name, "del", fmt.Sprintf("%d", d.ID))
+		rows = append(rows, selector.Row(btn))
+	}
+	selector.Inline(rows...)
+	bot.Edit(msg, "📚 Ваши документы:\n\n"+strings.Join(lines, "\n"), selector)
 }
 
 func makeDocHandler(log *slog.Logger) tele.HandlerFunc {
